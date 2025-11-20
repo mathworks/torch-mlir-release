@@ -53,7 +53,7 @@ jobs:
 
       - name: "Setup pytorch dependencies"
         run: |
-          pip install --no-cache-dir torch==2.5.1 torchvision --index-url https://download.pytorch.org/whl/cpu    
+          pip install --no-cache-dir torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu    
 
       - name: Put current date into a variable
         run: |
