@@ -2,7 +2,6 @@ name: Build Release and Publish
 
 on:
   workflow_dispatch:
-  push:
 
 # Ensure that only a single job or workflow using the same
 # concurrency group will run at a time. This would cancel
@@ -38,6 +37,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: mathworks/torch-mlir
+          ssh-key: ${{ secrets.TORCH_MLIR_DEPLOY_KEY }}
           ref: refs/heads/mw_main
           submodules: 'true'
 
