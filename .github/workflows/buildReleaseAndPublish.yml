@@ -14,8 +14,7 @@ concurrency:
 
 jobs:
   build_linux:
-    name: Linux x86_64 Build
-    runs-on: ubuntu-latest
+    name: Linux Build
     env:
       CACHE_DIR: ${{ github.workspace }}/.container-cache
     # Elevates permissions for `GITHUB_TOKEN`'s content scope (to allow this action to make a release)
@@ -26,34 +25,27 @@ jobs:
     strategy:
       matrix:
         package: [torch-mlir]
-        py_version: [cp311-cp311]
-        python-version: ["3.11"]
+        arch: [x86_64, AArch64]
+        py_version: ['3.11']
+        include:
+          - py_version: '3.11'
+            py_tag: 'cp311-cp311'
+
+    runs-on: ${{ matrix.arch == 'AArch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
 
     steps:
       - name: Checkout torch-mlir
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: mathworks/torch-mlir
           ref: refs/heads/mw_main
           submodules: 'true'
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: Setup workspace
         uses: ./.github/actions/setup-build
         with:
           cache-enabled: 'true'
-          torch-version: 'stable'
-
-      - name: Display Python version
-        run: python -c "import sys; print(sys.version)"
-
-      - name: "Setup pytorch dependencies"
-        run: |
-          pip install --no-cache-dir torch==2.5.1 torchvision --index-url https://download.pytorch.org/whl/cpu    
+          python-version: ${{ matrix.py_version }}
 
       - name: Put current date into a variable
         run: |
@@ -63,15 +55,27 @@ jobs:
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ${{ env.CACHE_DIR }}
-          key: build-test-cpp-asserts-linux-${{ matrix.torch-version }}-v2-${{ github.sha }}
+          key: build-test-cpp-asserts-linux-v2-${{ github.sha }}
           restore-keys: |
-            build-test-cpp-asserts-linux-${{ matrix.torch-version }}-v2-
+            build-test-cpp-asserts-linux-v2-
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@53911442209d5c18de8a31615e0923161e435875 # v1.2.16
         with:
-          key: ${{ github.job }}-${{ matrix.torch-version }}
+          key: ${{ github.job }}
           save: ${{ needs.setup.outputs.write-caches == 1 }}
+
+      - name: Verify python version
+        run: |          
+          # extract python major.minor version, for example, extract 3.10 from version 3.10.12
+          actual_version=$(python --version | cut -d' ' -f2 | cut -d'.' -f1,2)
+          expected_version="${{ matrix.py_version }}"
+          
+          if [ "$actual_version" != "$expected_version" ]; then
+            echo "ERROR: Python version mismatch! Expected $expected_version but got $actual_version"
+            exit 1
+          fi
+          echo "Python version verified: Expected $expected_version and got $actual_version"
 
       - name: Build Python wheels and smoke test
         run: |
@@ -79,15 +83,14 @@ jobs:
           tm_package_version="$(printf '${{ env.NOW }}.${{ github.run_number }}')"
           echo "tm_package_version=${tm_package_version}" >> $GITHUB_ENV
           printf "TORCH_MLIR_PYTHON_PACKAGE_VERSION=%s\n" ${tm_package_version} > ./torch_mlir_package_version
-          TM_PYTHON_VERSIONS=${{ matrix.py_version }} TM_PACKAGES=${{ matrix.package }} TM_TORCH_VERSION=stable ./build_tools/python_deploy/build_linux_packages.sh
-
+          TM_PYTHON_VERSIONS=${{ matrix.py_tag }} TM_PACKAGES=${{ matrix.package }} ./build_tools/python_deploy/build_linux_packages.sh
 
       - name: Save cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         if: ${{ !cancelled() }}
         with:
           path: ${{ env.CACHE_DIR }}
-          key: build-test-cpp-asserts-linux-${{ matrix.torch-version }}-v2-${{ github.sha }}
+          key: build-test-cpp-asserts-linux-v2-${{ github.sha }}
 
       - name: Make assets available in dist
         run: |
@@ -95,14 +98,14 @@ jobs:
           cp build_tools/python_deploy/wheelhouse/torch*.whl dist/
 
       - name: Upload python wheels
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           if-no-files-found: error
-          name: snapshot-${{ matrix.package }}-${{ matrix.py_version }}-${{ env.tm_package_version }}
+          name: snapshot-${{ matrix.package }}-${{ matrix.arch }}-${{ matrix.py_tag }}-${{ env.tm_package_version }}
           path: dist
 
       - name: Release python wheels
-        uses: ncipollo/release-action@440c8c1cb0ed28b9f43e4d1d670870f059653174 # v.1.16.0
+        uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v.1.20.0
         with:
           artifacts: dist/*.whl
           token: "${{ secrets.GITHUB_TOKEN }}"
@@ -113,3 +116,4 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: true
+          artifactErrorsFailBuild: true

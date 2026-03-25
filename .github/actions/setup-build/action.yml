@@ -5,6 +5,20 @@ description: "Setup python, ninja-build etc."
 permissions:
   contents: read
 
+inputs:
+  python-version:
+    description: "Python version to install"
+    required: false
+    default: '3.11'
+  cache-enabled:
+    description: "Enable ccache"
+    required: false
+    default: 'true'
+  cache-suffix:
+    description: "Cache key suffix"
+    required: false
+    default: ''
+
 runs:
   using: "composite"
 
@@ -12,7 +26,7 @@ runs:
     - name: Set up Python
       uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
       with:
-        python-version: '3.11'
+        python-version: ${{ inputs.python-version }}
 
     - name: Install prerequisites (Linux)
       run: sudo apt-get install --yes ninja-build ccache
