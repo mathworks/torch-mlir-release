@@ -2,6 +2,7 @@ name: Build Release and Publish
 
 on:
   workflow_dispatch:
+  push:
 
 # Ensure that only a single job or workflow using the same
 # concurrency group will run at a time. This would cancel
@@ -83,7 +84,7 @@ jobs:
           tm_package_version="$(printf '${{ env.NOW }}.${{ github.run_number }}')"
           echo "tm_package_version=${tm_package_version}" >> $GITHUB_ENV
           printf "TORCH_MLIR_PYTHON_PACKAGE_VERSION=%s\n" ${tm_package_version} > ./torch_mlir_package_version
-          TM_PYTHON_VERSIONS=${{ matrix.py_tag }} TM_PACKAGES=${{ matrix.package }} ./build_tools/python_deploy/build_linux_packages.sh
+          TM_PYTHON_VERSIONS=${{ matrix.py_tag }} TM_PACKAGES=${{ matrix.package }} TM_TORCH_VERSION=stable ./build_tools/python_deploy/build_linux_packages.sh
 
       - name: Save cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
