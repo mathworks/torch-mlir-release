@@ -70,11 +70,13 @@ jobs:
         id: ccache-restore
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
-          # On Linux this dir is bind-mounted into the manylinux container as
-          # /project/.ccache (see [tool.cibuildwheel.linux] CCACHE_DIR). On
-          # macOS and Windows the build runs natively and reads CCACHE_DIR from
-          # the step env below.
-          path: ${{ github.workspace }}/.ccache
+          # Kept outside the checkout. On Linux cibuildwheel copies the project
+          # into the manylinux container rather than mounting it, so ccache
+          # output under /project/.ccache never reaches the host; instead this
+          # dir is mounted there (see CIBW_CONTAINER_ENGINE below), matching
+          # [tool.cibuildwheel.linux] CCACHE_DIR. On macOS and Windows the
+          # build runs natively and reads CCACHE_DIR from the step env below.
+          path: ${{ runner.temp }}/ccache
           # Keyed on the run rather than github.sha: this repo's SHA does not
           # change when mw_main does, and cache keys are immutable.
           key: ccache-${{ matrix.name }}-${{ steps.meta.outputs.llvm_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -96,13 +98,15 @@ jobs:
           TORCH_MLIR_PYTHON_PACKAGE_VERSION: ${{ steps.meta.outputs.version }}
           # macOS/Windows builds run natively and inherit this; Linux uses the
           # in-container CCACHE_DIR from pyproject.toml instead.
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          # Linux only: mount the host ccache dir at the in-container CCACHE_DIR.
+          CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ runner.temp }}/ccache:/project/.ccache"
 
       - name: Save ccache
         if: ${{ !cancelled() }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
-          path: ${{ github.workspace }}/.ccache
+          path: ${{ runner.temp }}/ccache
           key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
 
       - name: Upload ${{ matrix.name }} wheels
