@@ -106,10 +106,12 @@ jobs:
           set -euo pipefail
           mkdir -p extracted
           for whl in wheelhouse/*.whl; do
-            filename=$(basename "$whl")
+            filename=$(basename "$whl" .whl)
             # Platform tag is the last '-'-separated field of the wheel name,
-            # minus the .whl extension.
-            platform=$(echo "$filename" | rev | cut -d- -f1 | rev | cut -d. -f1)
+            # truncated at the first '.' for multi-tag (manylinux) wheels.
+            # Plain bash only: Git Bash on Windows runners lacks `rev`.
+            platform="${filename##*-}"
+            platform="${platform%%.*}"
             if [[ "$platform" == win* ]]; then
               bin_name="torch-mlir-opt.exe"
               ext=".exe"
@@ -119,16 +121,12 @@ jobs:
             fi
             target_path="extracted/torch-mlir-opt-${platform}${ext}"
             echo "Extracting $bin_name from $whl for platform $platform"
-            mkdir -p tmp_extract
-            # -j strips the archive path so the binary lands directly in tmp.
-            unzip -q -j "$whl" "torch_mlir/_mlir_libs/${bin_name}" -d tmp_extract
-            if [ ! -f "tmp_extract/${bin_name}" ]; then
-              echo "Error: ${bin_name} not found in $whl" >&2
-              exit 1
-            fi
-            mv "tmp_extract/${bin_name}" "$target_path"
+            # Use Python's zipfile rather than unzip, which Windows runners may
+            # not have. Raises KeyError if the binary is missing from the wheel.
+            python -c 'import shutil, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as z, z.open(sys.argv[2]) as src, open(sys.argv[3], "wb") as dst:
+              shutil.copyfileobj(src, dst)' "$whl" "torch_mlir/_mlir_libs/${bin_name}" "$target_path"
             chmod +x "$target_path"
-            rm -rf tmp_extract
           done
           echo "Extracted files:"
           ls -alh wheelhouse/ extracted/
