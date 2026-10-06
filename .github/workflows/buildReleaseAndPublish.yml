@@ -63,14 +63,21 @@ jobs:
           echo "version=$(date +'%Y%m%d').${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "llvm_sha=$(git rev-parse HEAD:externals/llvm-project)" >> "$GITHUB_OUTPUT"
 
+      # Restore and save are separate steps (rather than actions/cache) so the
+      # cache is saved right after the build even if the build or a later step
+      # fails; a partially warm ccache still speeds up the next run.
       - name: Restore ccache
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        id: ccache-restore
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           # On Linux this dir is bind-mounted into the manylinux container as
-          # /project/.ccache (see [tool.cibuildwheel.linux] CCACHE_DIR). On macOS
-          # the build runs natively and reads CCACHE_DIR from the step env below.
+          # /project/.ccache (see [tool.cibuildwheel.linux] CCACHE_DIR). On
+          # macOS and Windows the build runs natively and reads CCACHE_DIR from
+          # the step env below.
           path: ${{ github.workspace }}/.ccache
-          key: ccache-${{ matrix.name }}-${{ steps.meta.outputs.llvm_sha }}-${{ github.sha }}
+          # Keyed on the run rather than github.sha: this repo's SHA does not
+          # change when mw_main does, and cache keys are immutable.
+          key: ccache-${{ matrix.name }}-${{ steps.meta.outputs.llvm_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-${{ matrix.name }}-${{ steps.meta.outputs.llvm_sha }}-
             ccache-${{ matrix.name }}-
@@ -87,9 +94,16 @@ jobs:
           # Only build the Python 3.12 (abi3) wheel.
           CIBW_BUILD: "cp312-*"
           TORCH_MLIR_PYTHON_PACKAGE_VERSION: ${{ steps.meta.outputs.version }}
-          # macOS builds run natively and inherit this; Linux uses the in-container
-          # CCACHE_DIR from pyproject.toml instead.
+          # macOS/Windows builds run natively and inherit this; Linux uses the
+          # in-container CCACHE_DIR from pyproject.toml instead.
           CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+      - name: Save ccache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
 
       - name: Upload ${{ matrix.name }} wheels
         if: always()
