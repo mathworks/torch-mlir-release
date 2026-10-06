@@ -1,5 +1,10 @@
 name: Build Release and Publish
 
+# Builds torch-mlir wheels from mathworks/torch-mlir with cibuildwheel, using
+# the [tool.cibuildwheel] config in that repo's pyproject.toml. Mirrors
+# llvm/torch-mlir's .github/workflows/_build_wheels.yml and release.yml, minus
+# the PyPI publishing. Each platform publishes its own wheel to dev-wheels.
+
 on:
   workflow_dispatch:
   push:
@@ -13,102 +18,125 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_linux:
-    name: Linux Build
-    env:
-      CACHE_DIR: ${{ github.workspace }}/.container-cache
+  build_wheels:
+    name: Build wheels on ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     # Elevates permissions for `GITHUB_TOKEN`'s content scope (to allow this action to make a release)
     permissions:
       contents: write
     # Don't run this in everyone's forks on schedule but allow to run via dispatch.
     if: ${{ github.repository_owner == 'llvm' || github.event_name != 'schedule' }}
     strategy:
+      fail-fast: false
       matrix:
-        package: [torch-mlir]
-        arch: [x86_64, AArch64]
-        py_version: ['3.11']
         include:
-          - py_version: '3.11'
-            py_tag: 'cp311-cp311'
-
-    runs-on: ${{ matrix.arch == 'AArch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+          - name: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - name: macos-arm64
+            runner: macos-15
+          - name: windows-x86_64
+            runner: windows-latest
 
     steps:
       - name: Checkout torch-mlir
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: mathworks/torch-mlir
           ssh-key: ${{ secrets.TORCH_MLIR_DEPLOY_KEY }}
           ref: refs/heads/mw_main
-          submodules: 'true'
+          # The externals/llvm-project submodule must be present: cibuildwheel
+          # copies this checkout into the manylinux container to build from.
+          submodules: 'recursive'
 
-      - name: Setup workspace
-        uses: ./.github/actions/setup-build
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        name: Install Python 3.12
         with:
-          cache-enabled: 'true'
-          python-version: ${{ matrix.py_version }}
+          python-version: "3.12"
+      - run: pip install --upgrade pip uv
 
-      - name: Put current date into a variable
+      - name: Compute package version and LLVM submodule SHA (for ccache key)
+        id: meta
+        shell: bash
         run: |
-          echo "NOW=$(date +'%Y%m%d')" >> $GITHUB_ENV
+          echo "version=$(date +'%Y%m%d').${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "llvm_sha=$(git rev-parse HEAD:externals/llvm-project)" >> "$GITHUB_OUTPUT"
 
-      - name: Enable cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      - name: Restore ccache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
-          path: ${{ env.CACHE_DIR }}
-          key: build-test-cpp-asserts-linux-v2-${{ github.sha }}
+          # On Linux this dir is bind-mounted into the manylinux container as
+          # /project/.ccache (see [tool.cibuildwheel.linux] CCACHE_DIR). On macOS
+          # the build runs natively and reads CCACHE_DIR from the step env below.
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ matrix.name }}-${{ steps.meta.outputs.llvm_sha }}-${{ github.sha }}
           restore-keys: |
-            build-test-cpp-asserts-linux-v2-
+            ccache-${{ matrix.name }}-${{ steps.meta.outputs.llvm_sha }}-
+            ccache-${{ matrix.name }}-
 
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@53911442209d5c18de8a31615e0923161e435875 # v1.2.16
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
-          key: ${{ github.job }}
-          save: ${{ needs.setup.outputs.write-caches == 1 }}
+          arch: x64
 
-      - name: Verify python version
-        run: |          
-          # extract python major.minor version, for example, extract 3.10 from version 3.10.12
-          actual_version=$(python --version | cut -d' ' -f2 | cut -d'.' -f1,2)
-          expected_version="${{ matrix.py_version }}"
-          
-          if [ "$actual_version" != "$expected_version" ]; then
-            echo "ERROR: Python version mismatch! Expected $expected_version but got $actual_version"
-            exit 1
-          fi
-          echo "Python version verified: Expected $expected_version and got $actual_version"
+      - name: Build wheels with cibuildwheel
+        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55 # v4.1.0
+        env:
+          # Only build the Python 3.12 (abi3) wheel.
+          CIBW_BUILD: "cp312-*"
+          TORCH_MLIR_PYTHON_PACKAGE_VERSION: ${{ steps.meta.outputs.version }}
+          # macOS builds run natively and inherit this; Linux uses the in-container
+          # CCACHE_DIR from pyproject.toml instead.
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
 
-      - name: Build Python wheels and smoke test
+      - name: Upload ${{ matrix.name }} wheels
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.name }}
+          path: wheelhouse/*.whl
+
+      # Each platform publishes independently so that one platform failing does
+      # not block the others' wheels from reaching dev-wheels.
+      - name: Extract and rename torch-mlir-opt binary
+        shell: bash
         run: |
-          cd $GITHUB_WORKSPACE
-          tm_package_version="$(printf '${{ env.NOW }}.${{ github.run_number }}')"
-          echo "tm_package_version=${tm_package_version}" >> $GITHUB_ENV
-          printf "TORCH_MLIR_PYTHON_PACKAGE_VERSION=%s\n" ${tm_package_version} > ./torch_mlir_package_version
-          TM_PYTHON_VERSIONS=${{ matrix.py_tag }} TM_PACKAGES=${{ matrix.package }} TM_TORCH_VERSION=stable ./build_tools/python_deploy/build_linux_packages.sh
-
-      - name: Save cache
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        if: ${{ !cancelled() }}
-        with:
-          path: ${{ env.CACHE_DIR }}
-          key: build-test-cpp-asserts-linux-v2-${{ github.sha }}
-
-      - name: Make assets available in dist
-        run: |
-          mkdir dist
-          cp build_tools/python_deploy/wheelhouse/torch*.whl dist/
-
-      - name: Upload python wheels
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          if-no-files-found: error
-          name: snapshot-${{ matrix.package }}-${{ matrix.arch }}-${{ matrix.py_tag }}-${{ env.tm_package_version }}
-          path: dist
+          set -euo pipefail
+          mkdir -p extracted
+          for whl in wheelhouse/*.whl; do
+            filename=$(basename "$whl")
+            # Platform tag is the last '-'-separated field of the wheel name,
+            # minus the .whl extension.
+            platform=$(echo "$filename" | rev | cut -d- -f1 | rev | cut -d. -f1)
+            if [[ "$platform" == win* ]]; then
+              bin_name="torch-mlir-opt.exe"
+              ext=".exe"
+            else
+              bin_name="torch-mlir-opt"
+              ext=""
+            fi
+            target_path="extracted/torch-mlir-opt-${platform}${ext}"
+            echo "Extracting $bin_name from $whl for platform $platform"
+            mkdir -p tmp_extract
+            # -j strips the archive path so the binary lands directly in tmp.
+            unzip -q -j "$whl" "torch_mlir/_mlir_libs/${bin_name}" -d tmp_extract
+            if [ ! -f "tmp_extract/${bin_name}" ]; then
+              echo "Error: ${bin_name} not found in $whl" >&2
+              exit 1
+            fi
+            mv "tmp_extract/${bin_name}" "$target_path"
+            chmod +x "$target_path"
+            rm -rf tmp_extract
+          done
+          echo "Extracted files:"
+          ls -alh wheelhouse/ extracted/
 
       - name: Release python wheels
-        uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v.1.20.0
+        uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1.20.0
         with:
-          artifacts: dist/*.whl
+          artifacts: "wheelhouse/*.whl,extracted/*"
           token: "${{ secrets.GITHUB_TOKEN }}"
           tag: "dev-wheels"
           name: "dev-wheels"
