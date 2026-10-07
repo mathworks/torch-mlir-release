@@ -110,8 +110,7 @@ jobs:
           CCACHE_DIR: ${{ runner.temp }}/ccache
           # Linux only: mount the host ccache dir at the in-container CCACHE_DIR.
           CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ runner.temp }}/ccache:/project/.ccache"
-          # Windows only: log ccache decisions to diagnose why nothing is cached.
-          CCACHE_LOGFILE: ${{ runner.os == 'Windows' && format('{0}/ccache.log', runner.temp) || '' }}
+          # Windows only: cap CMake (see "Cap CMake for ccache" above).
           UV_CONSTRAINT: ${{ runner.os == 'Windows' && format('{0}/cmake-constraint.txt', runner.temp) || '' }}
 
       - name: Show ccache stats
@@ -127,16 +126,6 @@ jobs:
             sudo apt-get install -y -qq ccache > /dev/null
           fi
           ccache --show-stats --verbose
-          log="${{ runner.temp }}/ccache.log"
-          if [[ -f "$log" ]]; then
-            echo "::group::ccache log: most common failure/uncacheable reasons"
-            grep -iE "fail|unsupported|uncacheable|disabl|cannot|can't|not " "$log" \
-              | sed -E 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -40 || true
-            echo "::endgroup::"
-            echo "::group::ccache log: first compile"
-            head -80 "$log"
-            echo "::endgroup::"
-          fi
 
       - name: Save ccache
         if: ${{ !cancelled() }}
