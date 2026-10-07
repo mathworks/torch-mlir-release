@@ -90,6 +90,15 @@ jobs:
         with:
           arch: x64
 
+      # CMake >= 4.3 makes clang-cl emit depfiles via `-clang:-MD`, which
+      # ccache rejects as unsupported, so no Windows compile gets cached.
+      # The build-isolation env is installed by uv, which honors
+      # UV_CONSTRAINT (set in the cibuildwheel step below).
+      - name: Cap CMake for ccache (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'cmake<4.3' > "${{ runner.temp }}/cmake-constraint.txt"
+
       - name: Build wheels with cibuildwheel
         uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55 # v4.1.0
         env:
@@ -103,6 +112,7 @@ jobs:
           CIBW_CONTAINER_ENGINE: "docker; create_args: --volume ${{ runner.temp }}/ccache:/project/.ccache"
           # Windows only: log ccache decisions to diagnose why nothing is cached.
           CCACHE_LOGFILE: ${{ runner.os == 'Windows' && format('{0}/ccache.log', runner.temp) || '' }}
+          UV_CONSTRAINT: ${{ runner.os == 'Windows' && format('{0}/cmake-constraint.txt', runner.temp) || '' }}
 
       - name: Show ccache stats
         if: ${{ !cancelled() }}
